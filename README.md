@@ -1,6 +1,6 @@
 # Labyrinthine
 
-Linux-first Rust terminal maze project with reinforcement learning maze solver.
+Linux-first Rust terminal maze runner with Q-learning, auto-solving, and progressive wide-screen levels.
 
 ## Current implementation
 
