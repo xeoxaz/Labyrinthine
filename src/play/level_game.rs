@@ -7,6 +7,9 @@ use crate::play::state::GameState;
 use crate::play::pathing;
 use crate::play::ml_solver::MLSolver;
 
+const WIDE_ASPECT_NUMERATOR: usize = 21;
+const WIDE_ASPECT_DENOMINATOR: usize = 9;
+
 #[derive(Clone, Debug)]
 pub struct LevelLoadingState {
     pub level: usize,
@@ -15,6 +18,12 @@ pub struct LevelLoadingState {
     pub warmup_episodes_done: u32,
     pub warmup_episodes_total: u32,
     pub last_summary: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReloadState {
+    pub level: usize,
+    pub reason: String,
 }
 
 impl LevelLoadingState {
@@ -35,6 +44,7 @@ pub struct LevelGame {
     pub current_game: GameState,
     pub ml_solver: Option<MLSolver>,
     pub loading_level: Option<LevelLoadingState>,
+    pub reload_state: Option<ReloadState>,
     pub maze_seed: u64,
     pub status_message: Option<String>,
     pub max_width: usize,
@@ -48,6 +58,7 @@ impl LevelGame {
             current_game: GameState::new(Maze::new(2, 2), Vec::new()),
             ml_solver: None,
             loading_level: None,
+            reload_state: None,
             maze_seed: initial_seed,
             status_message: None,
             max_width: max_width.max(2),
@@ -103,6 +114,7 @@ impl LevelGame {
         self.current_game = self.build_game_for_level(level);
         self.current_game.player.control_mode = next_mode;
         self.loading_level = None;
+        self.reload_state = None;
         self.status_message = None;
 
         // Update agent difficulty if ML solver exists
@@ -173,12 +185,24 @@ impl LevelGame {
         (3 + (level / 2) as u32).min(8)
     }
 
-    pub fn restart_ml_attempt(&mut self, reason: impl Into<String>) {
+    pub fn begin_ml_reload(&mut self, reason: impl Into<String>) {
+        let level = self.level_manager.current_level();
+        let reason = reason.into();
+        self.loading_level = None;
+        self.reload_state = Some(ReloadState {
+            level,
+            reason: reason.clone(),
+        });
+        self.status_message = Some(format!("Reloading level {}", level));
+    }
+
+    pub fn finish_ml_reload(&mut self) {
         let level = self.level_manager.current_level();
         let mut game = self.build_game_for_level(level);
         game.player.control_mode = ControlMode::MLAgent;
         self.current_game = game;
-        self.status_message = Some(reason.into());
+        self.reload_state = None;
+        self.status_message = Some(format!("Level {} reloaded", level));
         if let Some(solver) = &mut self.ml_solver {
             solver.begin_new_episode();
         }
@@ -198,26 +222,29 @@ impl LevelGame {
     }
 
     fn wide_dimensions(level: usize, base_seed: u64, max_width: usize, max_height: usize) -> Option<(usize, usize)> {
-        let max_wide_width = max_width.min(max_height.saturating_mul(16) / 9).max(2);
+        let max_wide_width = max_width
+            .min(max_height.saturating_mul(WIDE_ASPECT_NUMERATOR) / WIDE_ASPECT_DENOMINATOR)
+            .max(2);
         if max_wide_width < 4 {
             return None;
         }
 
-        let target_width = (12 + level * 4).min(max_wide_width).max(4);
-        let min_width = target_width.saturating_sub(4).max(4);
+        let target_width = (14 + level * 5).min(max_wide_width).max(4);
+        let min_width = target_width.saturating_sub(3).max(4);
         let width_range = target_width - min_width + 1;
         let mut width = min_width
             + (Self::mix_seed(base_seed, level as u64 * 13 + 7) as usize % width_range);
         width = width.min(max_wide_width).max(4);
 
-        let mut height = width.saturating_mul(9) / 16;
+        let mut height = width.saturating_mul(WIDE_ASPECT_DENOMINATOR) / WIDE_ASPECT_NUMERATOR;
         height = height.max(2).min(max_height);
 
         if height > width {
             return None;
         }
 
-        let corrected_width = (height.saturating_mul(16) / 9).max(width.saturating_sub(1));
+        let corrected_width = (height.saturating_mul(WIDE_ASPECT_NUMERATOR) / WIDE_ASPECT_DENOMINATOR)
+            .max(width.saturating_sub(1));
         let width = corrected_width.min(max_wide_width).max(height);
 
         if width < height {
@@ -229,7 +256,9 @@ impl LevelGame {
 
     fn best_effort_wide_dimensions(max_width: usize, max_height: usize) -> (usize, usize) {
         let width = max_width.max(2);
-        let height = ((width.saturating_mul(9)) / 16).max(2).min(max_height.max(2));
+        let height = ((width.saturating_mul(WIDE_ASPECT_DENOMINATOR)) / WIDE_ASPECT_NUMERATOR)
+            .max(2)
+            .min(max_height.max(2));
 
         if width >= height {
             (width, height)
@@ -294,15 +323,17 @@ mod tests {
     }
 
     #[test]
-    fn wide_layout_tracks_sixteen_by_nine_ratio() {
+    fn wide_layout_tracks_ultrawide_ratio() {
         let mut level_game = LevelGame::new(555, 40, 16);
 
         for _ in 0..5 {
             let width = level_game.current_game.maze.width() as i64;
             let height = level_game.current_game.maze.height() as i64;
-            let ratio_error = (width * 9 - height * 16).abs();
+            let ratio_error = (width * WIDE_ASPECT_DENOMINATOR as i64
+                - height * WIDE_ASPECT_NUMERATOR as i64)
+                .abs();
 
-            assert!(ratio_error <= 16);
+            assert!(ratio_error <= WIDE_ASPECT_NUMERATOR as i64);
             level_game.next_level();
         }
     }
@@ -332,5 +363,28 @@ mod tests {
         assert_eq!(level_game.level_manager.current_level(), 1);
         assert!(loading.warmup_episodes_total >= 3);
         assert_eq!(loading.template_game.player.control_mode, ControlMode::MLAgent);
+    }
+
+    #[test]
+    fn begin_ml_reload_tracks_reason_and_level() {
+        let mut level_game = LevelGame::new(123, 24, 12);
+
+        level_game.begin_ml_reload("ML reset: hit 10s time limit");
+
+        let reload = level_game.reload_state.as_ref().expect("reload state");
+        assert_eq!(reload.level, 1);
+        assert!(reload.reason.contains("time limit"));
+    }
+
+    #[test]
+    fn finish_ml_reload_restores_ml_agent_game() {
+        let mut level_game = LevelGame::new(123, 24, 12);
+        level_game.begin_ml_reload("ML reset: hit 10s time limit");
+
+        level_game.finish_ml_reload();
+
+        assert!(level_game.reload_state.is_none());
+        assert_eq!(level_game.current_game.player.control_mode, ControlMode::MLAgent);
+        assert!(level_game.status_message.as_deref().is_some_and(|message| message.contains("reloaded")));
     }
 }

@@ -26,10 +26,11 @@ use runtime::resources::{apply as apply_resource_policy, resolve_thread_count, R
 use tui::render;
 
 const SIMULATION_DT: Duration = Duration::from_millis(8);
-const RENDER_DT: Duration = Duration::from_millis(66);
+const RENDER_DT: Duration = Duration::from_millis(83);
 const AUTO_ADVANCE_DELAY: Duration = Duration::from_millis(900);
 const MAX_SIMULATION_STEPS: usize = 8;
 const LOADING_BATCH_STEPS: usize = 48;
+const RELOAD_SCREEN_DURATION: Duration = Duration::from_millis(850);
 const BOOT_SCREEN_DURATION: Duration = Duration::from_millis(2200);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const IDLE_SLEEP: Duration = Duration::from_millis(1);
@@ -108,6 +109,7 @@ fn run_play(_command: &Command) -> Result<(), String> {
     let mut level_game = LevelGame::new(session_seed, max_width, max_height);
     let mut rng = rand::rngs::StdRng::seed_from_u64(session_seed);
     let mut ml_auto_advance_at: Option<Instant> = None;
+    let mut ml_reload_at: Option<Instant> = None;
     let mut view_cycle = ViewCycleState::new();
     level_game.status_message = Some(ml_runtime.detail_message().to_string());
 
@@ -147,7 +149,7 @@ fn run_play(_command: &Command) -> Result<(), String> {
     let mut dirty = true;
 
     loop {
-        match process_input(&mut level_game, &mut ml_auto_advance_at)? {
+        match process_input(&mut level_game, &mut ml_auto_advance_at, &mut ml_reload_at)? {
             InputResult::Continue(changed) => dirty |= changed,
             InputResult::Quit => return Ok(()),
         }
@@ -163,6 +165,7 @@ fn run_play(_command: &Command) -> Result<(), String> {
                 &mut level_game,
                 &mut rng,
                 &mut ml_auto_advance_at,
+                &mut ml_reload_at,
             );
             accumulated = accumulated.saturating_sub(SIMULATION_DT);
             sim_steps += 1;
@@ -180,6 +183,14 @@ fn run_play(_command: &Command) -> Result<(), String> {
                     loading,
                     ml_runtime.short_label(),
                     level_game.ml_hud_stats(),
+                    level_game.maze_seed,
+                ).map_err(|e| e.to_string())?;
+            } else if let Some(reload) = level_game.reload_state.as_ref() {
+                render::draw_reload_screen(
+                    &mut stdout,
+                    reload,
+                    ml_runtime.short_label(),
+                    level_game.maze_seed,
                 ).map_err(|e| e.to_string())?;
             } else {
                 render::draw_frame_with_level(
@@ -194,6 +205,7 @@ fn run_play(_command: &Command) -> Result<(), String> {
                     level_game.ml_step_limit(),
                     level_game.ml_hud_stats(),
                     view_cycle.mode,
+                    level_game.maze_seed,
                 ).map_err(|e| e.to_string())?;
             }
             next_render_at = now + RENDER_DT;
@@ -302,13 +314,14 @@ fn run_boot_sequence<W: Write>(
 fn process_input(
     level_game: &mut LevelGame,
     ml_auto_advance_at: &mut Option<Instant>,
+    ml_reload_at: &mut Option<Instant>,
 ) -> Result<InputResult, String> {
     let mut dirty = false;
 
     while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
         if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                if level_game.loading_level.is_some() {
+                if level_game.loading_level.is_some() || level_game.reload_state.is_some() {
                     if matches!(key.code, crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q')) {
                         return Ok(InputResult::Quit);
                     }
@@ -326,6 +339,7 @@ fn process_input(
                         level_game.next_level();
                     }
                     *ml_auto_advance_at = None;
+                    *ml_reload_at = None;
                     dirty = true;
                     continue;
                 }
@@ -350,7 +364,12 @@ fn advance_simulation(
     level_game: &mut LevelGame,
     rng: &mut rand::rngs::StdRng,
     ml_auto_advance_at: &mut Option<Instant>,
+    ml_reload_at: &mut Option<Instant>,
 ) -> bool {
+    if level_game.reload_state.is_some() {
+        return advance_reload(level_game, ml_reload_at);
+    }
+
     if level_game.loading_level.is_some() {
         return advance_loading(level_game, rng);
     }
@@ -421,8 +440,27 @@ fn advance_simulation(
     }
 
     if let Some(reason) = failure_reason {
-        level_game.restart_ml_attempt(reason);
+        level_game.begin_ml_reload(reason);
         *ml_auto_advance_at = None;
+        *ml_reload_at = None;
+    }
+
+    true
+}
+
+fn advance_reload(level_game: &mut LevelGame, ml_reload_at: &mut Option<Instant>) -> bool {
+    if level_game.reload_state.is_none() {
+        *ml_reload_at = None;
+        return false;
+    }
+
+    if let Some(deadline) = ml_reload_at {
+        if Instant::now() >= *deadline {
+            level_game.finish_ml_reload();
+            *ml_reload_at = None;
+        }
+    } else {
+        *ml_reload_at = Some(Instant::now() + RELOAD_SCREEN_DURATION);
     }
 
     true
