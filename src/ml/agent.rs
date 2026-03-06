@@ -27,30 +27,12 @@ impl AgentAction {
         }
     }
 
-    pub fn from_direction(dir: Direction) -> Self {
-        match dir {
-            Direction::North => AgentAction::North,
-            Direction::East => AgentAction::East,
-            Direction::South => AgentAction::South,
-            Direction::West => AgentAction::West,
-        }
-    }
-
     pub fn index(self) -> usize {
         match self {
             AgentAction::North => 0,
             AgentAction::East => 1,
             AgentAction::South => 2,
             AgentAction::West => 3,
-        }
-    }
-
-    pub fn from_index(idx: usize) -> Self {
-        match idx {
-            0 => AgentAction::North,
-            1 => AgentAction::East,
-            2 => AgentAction::South,
-            _ => AgentAction::West,
         }
     }
 }
@@ -98,27 +80,42 @@ impl QLearningAgent {
     }
 
     /// Get the next action using epsilon-greedy strategy
-    pub fn select_action(&self, state: QState, rng: &mut impl Rng) -> AgentAction {
+    pub fn select_action(
+        &self,
+        state: QState,
+        valid_actions: &[AgentAction],
+        rng: &mut impl Rng,
+    ) -> AgentAction {
+        let actions = if valid_actions.is_empty() {
+            &AgentAction::ALL
+        } else {
+            valid_actions
+        };
+
         if rng.random::<f32>() < self.epsilon {
             // Explore: random action
-            let idx = rng.random_range(0..4);
-            AgentAction::from_index(idx)
+            let idx = rng.random_range(0..actions.len());
+            actions[idx]
         } else {
             // Exploit: best known action
-            self.best_action(state)
+            self.best_action(state, actions)
         }
     }
 
     /// Get the best known action for a state
-    fn best_action(&self, state: QState) -> AgentAction {
-        let mut best_action = AgentAction::North;
+    fn best_action(&self, state: QState, valid_actions: &[AgentAction]) -> AgentAction {
+        let mut best_action = valid_actions.first().copied().unwrap_or(AgentAction::North);
         let mut best_value = f32::NEG_INFINITY;
 
-        for action_idx in 0..4 {
-            let q_val = self.q_table.get(&(state, action_idx)).copied().unwrap_or(0.0);
+        for action in valid_actions {
+            let q_val = self
+                .q_table
+                .get(&(state, action.index()))
+                .copied()
+                .unwrap_or(0.0);
             if q_val > best_value {
                 best_value = q_val;
-                best_action = AgentAction::from_index(action_idx);
+                best_action = *action;
             }
         }
 
@@ -169,8 +166,8 @@ impl QLearningAgent {
         &self,
         moved: bool,
         backtracked: bool,
-        new_dist_to_exit: f32,
-        old_dist_to_exit: f32,
+        new_dist_to_exit: usize,
+        old_dist_to_exit: usize,
         reached_exit: bool,
     ) -> f32 {
         if reached_exit {
@@ -183,11 +180,14 @@ impl QLearningAgent {
             // Penalty for hitting wall (harder penalties at higher difficulty)
             -1.0 * self.difficulty
         } else if new_dist_to_exit < old_dist_to_exit {
-            // Progress reward
-            0.5 * self.difficulty
+            // Reward true maze progress rather than straight-line movement.
+            let gain = old_dist_to_exit.saturating_sub(new_dist_to_exit) as f32;
+            (0.4 + gain * 0.2) * self.difficulty
+        } else if new_dist_to_exit > old_dist_to_exit {
+            let loss = new_dist_to_exit.saturating_sub(old_dist_to_exit) as f32;
+            (-0.3 - loss * 0.15) * self.difficulty
         } else {
-            // Small penalty for moving away or lateral
-            -0.1 * self.difficulty
+            -0.2 * self.difficulty
         }
     }
 
@@ -200,7 +200,6 @@ impl QLearningAgent {
         self.epsilon = (self.epsilon * self.epsilon_decay).max(self.epsilon_min);
     }
 
-    /// Get current epsilon (exploration rate)
     pub fn epsilon(&self) -> f32 {
         self.epsilon
     }
@@ -212,18 +211,26 @@ impl Default for QLearningAgent {
     }
 }
 
+impl AgentAction {
+    pub const ALL: [AgentAction; 4] = [
+        AgentAction::North,
+        AgentAction::East,
+        AgentAction::South,
+        AgentAction::West,
+    ];
+}
+
 #[cfg(test)]
 mod tests {
+    use rand::SeedableRng;
+
     use super::*;
 
     #[test]
     fn agent_action_conversions() {
         assert_eq!(AgentAction::North.to_direction(), Direction::North);
         assert_eq!(AgentAction::East.to_direction(), Direction::East);
-        assert_eq!(
-            AgentAction::from_direction(Direction::South),
-            AgentAction::South
-        );
+        assert_eq!(AgentAction::South.to_direction(), Direction::South);
     }
 
     #[test]
@@ -238,7 +245,7 @@ mod tests {
         assert!(q_val > 0.0);
 
         // Reward for reaching exit
-        let exit_reward = agent.compute_reward(true, false, 0.0, 1.0, true);
+        let exit_reward = agent.compute_reward(true, false, 0, 1, true);
         assert_eq!(exit_reward, 100.0);
     }
 
@@ -246,10 +253,23 @@ mod tests {
     fn backtracking_penalty_is_stronger_than_idle_penalty() {
         let agent = QLearningAgent::new();
 
-        let idle_penalty = agent.compute_reward(false, false, 3.0, 3.0, false);
-        let backtrack_penalty = agent.compute_reward(true, true, 3.0, 2.0, false);
+        let idle_penalty = agent.compute_reward(false, false, 3, 3, false);
+        let backtrack_penalty = agent.compute_reward(true, true, 3, 2, false);
 
         assert!(backtrack_penalty < idle_penalty);
+    }
+
+    #[test]
+    fn valid_action_mask_ignores_invalid_best_q() {
+        let mut agent = QLearningAgent::new();
+        let state = QState(0, 0, 0);
+        agent.update_q_value(state, AgentAction::North, 10.0, state, false);
+        agent.update_q_value(state, AgentAction::East, 1.0, state, false);
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let action = agent.select_action(state, &[AgentAction::East], &mut rng);
+
+        assert_eq!(action, AgentAction::East);
     }
 
     #[test]

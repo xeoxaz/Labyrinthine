@@ -6,18 +6,22 @@ pub struct ResourcePolicy {
     pub threads: Option<usize>,
 }
 
-pub fn apply(policy: ResourcePolicy) -> Result<(), String> {
+pub fn resolve_thread_count(policy: ResourcePolicy) -> usize {
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
 
-    let threads = if let Some(explicit) = policy.threads {
+    if let Some(explicit) = policy.threads {
         explicit.max(1)
     } else if policy.max_mode {
         available
     } else {
         available.saturating_sub(1).max(1)
-    };
+    }
+}
+
+pub fn apply(policy: ResourcePolicy) -> Result<(), String> {
+    let threads = resolve_thread_count(policy);
 
     ThreadPoolBuilder::new()
         .num_threads(threads)

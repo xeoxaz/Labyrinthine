@@ -1,11 +1,9 @@
 use crate::core::grid::Maze;
-use crate::ml::agent::QState;
 
 pub struct LevelManager {
     current_level: usize,
     player_wins: usize,
     agent_wins: usize,
-    base_complexity: f32,
 }
 
 impl LevelManager {
@@ -14,7 +12,6 @@ impl LevelManager {
             current_level: 1,
             player_wins: 0,
             agent_wins: 0,
-            base_complexity: 0.5,
         }
     }
 
@@ -47,24 +44,27 @@ impl LevelManager {
         self.agent_wins = 0;
     }
 
-    /// Get complexity multiplier based on current level
-    /// Complexity affects wall density in maze generation
-    pub fn get_complexity(&self) -> f32 {
-        self.base_complexity + (self.current_level as f32 - 1.0) * 0.1
-    }
-
     /// Get agent difficulty multiplier (affects reward scaling)
     pub fn get_agent_difficulty(&self) -> f32 {
         1.0 + (self.current_level as f32 - 1.0) * 0.15
     }
 
-    pub fn ml_time_limit_secs(&self) -> u64 {
-        6 + self.current_level as u64 * 2
+    pub fn ml_time_limit_secs(&self, maze: &Maze, shortest_path_len: usize) -> u64 {
+        let area = (maze.width() * maze.height()) as u64;
+        let path = shortest_path_len.max(2) as u64;
+        let area_budget = area / 18;
+        let path_budget = path / 3;
+
+        12 + self.current_level as u64 * 3 + area_budget + path_budget
     }
 
-    pub fn ml_step_limit(&self, maze: &Maze) -> u64 {
+    pub fn ml_step_limit(&self, maze: &Maze, shortest_path_len: usize) -> u64 {
         let area = (maze.width() * maze.height()) as u64;
-        area + self.current_level as u64 * 40
+        let path = shortest_path_len.max(2) as u64;
+        let area_budget = area * 3;
+        let path_budget = path * 8;
+
+        80 + self.current_level as u64 * 60 + area_budget + path_budget
     }
 }
 
@@ -72,16 +72,6 @@ impl Default for LevelManager {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Convert game position to Q-learning state
-pub fn game_state_to_q_state(position: (usize, usize), direction_idx: usize) -> QState {
-    QState(position.0, position.1, direction_idx)
-}
-
-/// Compute manhattan distance heuristic
-pub fn manhattan_distance(a: (usize, usize), b: (usize, usize)) -> f32 {
-    (a.0.abs_diff(b.0) + a.1.abs_diff(b.1)) as f32
 }
 
 #[cfg(test)]
@@ -92,11 +82,11 @@ mod tests {
     fn level_progression() {
         let mut manager = LevelManager::new();
         assert_eq!(manager.current_level(), 1);
-        assert!(manager.get_complexity() < 0.6);
+        assert_eq!(manager.get_agent_difficulty(), 1.0);
 
         manager.next_level();
         assert_eq!(manager.current_level(), 2);
-        assert!(manager.get_complexity() > 0.5);
+        assert!(manager.get_agent_difficulty() > 1.0);
     }
 
     #[test]
@@ -119,8 +109,18 @@ mod tests {
         let mut level3 = LevelManager::new();
         level3.next_level();
         level3.next_level();
+        let path_len = 32;
 
-        assert!(level3.ml_time_limit_secs() > level1.ml_time_limit_secs());
-        assert!(level3.ml_step_limit(&maze) > level1.ml_step_limit(&maze));
+        assert!(level3.ml_time_limit_secs(&maze, path_len) > level1.ml_time_limit_secs(&maze, path_len));
+        assert!(level3.ml_step_limit(&maze, path_len) > level1.ml_step_limit(&maze, path_len));
+    }
+
+    #[test]
+    fn longer_paths_get_more_budget() {
+        let maze = Maze::new(20, 10);
+        let manager = LevelManager::new();
+
+        assert!(manager.ml_time_limit_secs(&maze, 80) > manager.ml_time_limit_secs(&maze, 20));
+        assert!(manager.ml_step_limit(&maze, 80) > manager.ml_step_limit(&maze, 20));
     }
 }

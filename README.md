@@ -22,6 +22,12 @@ cargo run -- play --width 39 --height 21 --seed 42 --max-mode
 
 # Start with ML agent (toggle modes with M)
 cargo run -- play --width 15 --height 9 --seed 7
+
+# Require GPU-ready ML runtime and fail if no GPU backend is detected
+cargo run -- play --require-gpu
+
+# Force CPU-only ML runtime
+cargo run -- play --cpu-only
 ```
 
 ## Controls

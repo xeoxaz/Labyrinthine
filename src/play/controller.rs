@@ -35,14 +35,10 @@ pub fn handle_key(game: &mut GameState, code: KeyCode) -> bool {
     }
 }
 
-pub fn tick(_game: &mut GameState) {
-}
-
 fn move_pawn(game: &mut GameState, direction: Direction) {
     game.start_timer_if_needed();
     if let Some(next) = game.maze.can_move(game.player.position, direction) {
-        game.player.position = next;
-        game.player.steps += 1;
+        game.move_player_to(next);
         if game.player.position == game.maze.exit {
             game.mark_won();
         }
@@ -102,6 +98,7 @@ mod tests {
         handle_key(&mut game, KeyCode::Char('d'));
         assert_eq!(game.player.position, (1, 0));
         assert_eq!(game.player.steps, 1);
+        assert_eq!(game.trail, vec![(0, 0)]);
     }
 
     #[test]
