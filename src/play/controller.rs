@@ -5,12 +5,9 @@ use crate::core::grid::Direction;
 use super::state::{ControlMode, GameState};
 
 pub fn handle_key(game: &mut GameState, code: KeyCode) -> bool {
-    if game.player.won {
-        return false;
-    }
-
     match code {
         KeyCode::Esc | KeyCode::Char('q') => true,
+        _ if game.player.won => false,
         KeyCode::Char('m') => {
             toggle_mode(game);
             false
@@ -146,5 +143,15 @@ mod tests {
 
         handle_key(&mut game, KeyCode::Char('d'));
         assert!(game.player.won);
+    }
+
+    #[test]
+    fn can_quit_after_winning() {
+        let maze = corridor_maze();
+        let mut game = GameState::new(maze, vec![]);
+
+        handle_key(&mut game, KeyCode::Char('d'));
+
+        assert!(handle_key(&mut game, KeyCode::Esc));
     }
 }

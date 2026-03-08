@@ -342,9 +342,7 @@ fn process_input(
                     continue;
                 }
 
-                if key.code == crossterm::event::KeyCode::Char('n')
-                    && level_game.current_game.player.won
-                {
+                if level_game.current_game.player.won && advances_after_win(key.code) {
                     if level_game.current_game.player.control_mode == ControlMode::MLAgent {
                         level_game.begin_next_level_loading();
                     } else {
@@ -684,6 +682,16 @@ fn parse_u64_flag(args: &[String], flag: &str) -> Option<u64> {
     value_after(args, flag)?.parse().ok()
 }
 
+fn advances_after_win(code: crossterm::event::KeyCode) -> bool {
+    matches!(
+        code,
+        crossterm::event::KeyCode::Char('n')
+            | crossterm::event::KeyCode::Char('N')
+            | crossterm::event::KeyCode::Enter
+            | crossterm::event::KeyCode::Char(' ')
+    )
+}
+
 fn resolve_play_dimensions(command: &Command, cols: u16, rows: u16) -> (usize, usize) {
     let terminal_max_width = ((cols as usize).saturating_sub(1) / 2).max(2);
     let terminal_max_height = ((rows as usize).saturating_sub(2) / 2).max(2);
@@ -799,5 +807,14 @@ mod cli_tests {
 
         assert_eq!(resolve_play_dimensions(&command, 120, 40), (30, 10));
         assert_eq!(resolve_play_dimensions(&command, 40, 12), (19, 5));
+    }
+
+    #[test]
+    fn accepts_multiple_post_win_advance_keys() {
+        assert!(advances_after_win(crossterm::event::KeyCode::Char('n')));
+        assert!(advances_after_win(crossterm::event::KeyCode::Char('N')));
+        assert!(advances_after_win(crossterm::event::KeyCode::Enter));
+        assert!(advances_after_win(crossterm::event::KeyCode::Char(' ')));
+        assert!(!advances_after_win(crossterm::event::KeyCode::Esc));
     }
 }
