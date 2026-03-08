@@ -65,7 +65,17 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
-    let command = parse_command(&args);
+    let command = match parse_command(&args)? {
+        CommandAction::Run(command) => command,
+        CommandAction::PrintHelp => {
+            print!("{}", usage_text(&args));
+            return Ok(());
+        }
+        CommandAction::PrintVersion => {
+            println!("labyrinthine {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    };
 
     apply_resource_policy(ResourcePolicy {
         max_mode: command.max_mode,
@@ -80,8 +90,12 @@ fn run() -> Result<(), String> {
 }
 
 fn run_generate(command: &Command) -> Result<(), String> {
-    let seed = rand::rng().random::<u64>();
-    let maze = generate_recursive_backtracker(command.width, command.height, seed);
+    let seed = command.seed.unwrap_or_else(|| rand::rng().random::<u64>());
+    let maze = generate_recursive_backtracker(
+        command.width.unwrap_or(39).max(2),
+        command.height.unwrap_or(21).max(2),
+        seed,
+    );
     let game = GameState::new(maze, Vec::new());
     let map = render_for_stdout(&game);
     println!("{map}");
@@ -94,9 +108,8 @@ fn run_play(_command: &Command) -> Result<(), String> {
         require_gpu: _command.require_gpu,
     };
     let (cols, rows) = terminal::size().map_err(|e| e.to_string())?;
-    let max_width = ((cols as usize).saturating_sub(1) / 2).max(2);
-    let max_height = ((rows as usize).saturating_sub(2) / 2).max(2);
-    let session_seed = rand::rng().random::<u64>();
+    let (max_width, max_height) = resolve_play_dimensions(_command, cols, rows);
+    let session_seed = _command.seed.unwrap_or_else(|| rand::rng().random::<u64>());
     let available_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -613,37 +626,88 @@ fn render_for_stdout(game: &GameState) -> String {
 #[derive(Debug)]
 struct Command {
     mode: String,
-    width: usize,
-    height: usize,
+    width: Option<usize>,
+    height: Option<usize>,
+    seed: Option<u64>,
     max_mode: bool,
     threads: Option<usize>,
     gpu_mode: bool,
     require_gpu: bool,
 }
 
-fn parse_command(args: &[String]) -> Command {
+enum CommandAction {
+    Run(Command),
+    PrintHelp,
+    PrintVersion,
+}
+
+fn parse_command(args: &[String]) -> Result<CommandAction, String> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") || args.get(1).is_some_and(|arg| arg == "help") {
+        return Ok(CommandAction::PrintHelp);
+    }
+
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        return Ok(CommandAction::PrintVersion);
+    }
+
     let mode = args.get(1).cloned().unwrap_or_else(|| "play".to_string());
-    let width = parse_usize_flag(args, "--width").unwrap_or(39).max(2);
-    let height = parse_usize_flag(args, "--height").unwrap_or(21).max(2);
+    if mode != "play" && mode != "generate" {
+        return Err(format!("unknown mode: {mode}"));
+    }
+
+    let width = parse_usize_flag(args, "--width").map(|value| value.max(2));
+    let height = parse_usize_flag(args, "--height").map(|value| value.max(2));
+    let seed = parse_u64_flag(args, "--seed");
     let max_mode = args.iter().any(|arg| arg == "--max-mode");
     let threads = parse_usize_flag(args, "--threads");
     let cpu_only = args.iter().any(|arg| arg == "--cpu-only");
     let gpu_mode = args.iter().any(|arg| arg == "--gpu-mode") || !cpu_only;
     let require_gpu = args.iter().any(|arg| arg == "--require-gpu");
 
-    Command {
+    Ok(CommandAction::Run(Command {
         mode,
         width,
         height,
+        seed,
         max_mode,
         threads,
         gpu_mode,
         require_gpu,
-    }
+    }))
 }
 
 fn parse_usize_flag(args: &[String], flag: &str) -> Option<usize> {
     value_after(args, flag)?.parse().ok()
+}
+
+fn parse_u64_flag(args: &[String], flag: &str) -> Option<u64> {
+    value_after(args, flag)?.parse().ok()
+}
+
+fn resolve_play_dimensions(command: &Command, cols: u16, rows: u16) -> (usize, usize) {
+    let terminal_max_width = ((cols as usize).saturating_sub(1) / 2).max(2);
+    let terminal_max_height = ((rows as usize).saturating_sub(2) / 2).max(2);
+
+    let width = command
+        .width
+        .unwrap_or(terminal_max_width)
+        .min(terminal_max_width)
+        .max(2);
+    let height = command
+        .height
+        .unwrap_or(terminal_max_height)
+        .min(terminal_max_height)
+        .max(2);
+
+    (width, height)
+}
+
+fn usage_text(args: &[String]) -> String {
+    let bin = args.first().map(String::as_str).unwrap_or("labyrinthine");
+    format!(
+        "Labyrinthine {}\n\nUsage:\n  {bin} [play] [options]\n  {bin} generate [options]\n  {bin} --help\n  {bin} --version\n\nModes:\n  play      Start the terminal maze runner (default)\n  generate  Print a generated maze to stdout\n\nOptions:\n  --width N       Maze width; in play mode, capped by terminal size\n  --height N      Maze height; in play mode, capped by terminal size\n  --seed N        Use a deterministic maze/session seed\n  --max-mode      Use all available CPU threads\n  --threads N     Set an explicit worker thread count\n  --gpu-mode      Prefer GPU-capable ML runtime when probe tools are available\n  --cpu-only      Disable GPU probing and force CPU runtime\n  --require-gpu   Fail if no supported GPU backend is detected\n  -h, --help      Show this help text\n  -V, --version   Show version information\n",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -660,5 +724,80 @@ impl Drop for TerminalGuard {
         let mut out = stdout();
         let _ = execute!(out, Show, LeaveAlternateScreen);
         let _ = out.flush();
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn parse_help_flag_returns_help_action() {
+        let args = vec!["labyrinthine".to_string(), "--help".to_string()];
+
+        assert!(matches!(parse_command(&args).unwrap(), CommandAction::PrintHelp));
+    }
+
+    #[test]
+    fn parse_version_flag_returns_version_action() {
+        let args = vec!["labyrinthine".to_string(), "--version".to_string()];
+
+        assert!(matches!(parse_command(&args).unwrap(), CommandAction::PrintVersion));
+    }
+
+    #[test]
+    fn parse_run_command_captures_seed_and_dimensions() {
+        let args = vec![
+            "labyrinthine".to_string(),
+            "generate".to_string(),
+            "--width".to_string(),
+            "25".to_string(),
+            "--height".to_string(),
+            "15".to_string(),
+            "--seed".to_string(),
+            "42".to_string(),
+        ];
+
+        let CommandAction::Run(command) = parse_command(&args).unwrap() else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(command.mode, "generate");
+        assert_eq!(command.width, Some(25));
+        assert_eq!(command.height, Some(15));
+        assert_eq!(command.seed, Some(42));
+    }
+
+    #[test]
+    fn play_dimensions_default_to_terminal_bounds() {
+        let command = Command {
+            mode: "play".to_string(),
+            width: None,
+            height: None,
+            seed: None,
+            max_mode: false,
+            threads: None,
+            gpu_mode: true,
+            require_gpu: false,
+        };
+
+        assert_eq!(resolve_play_dimensions(&command, 120, 40), (59, 19));
+    }
+
+    #[test]
+    fn play_dimensions_respect_requested_caps() {
+        let command = Command {
+            mode: "play".to_string(),
+            width: Some(30),
+            height: Some(10),
+            seed: Some(7),
+            max_mode: false,
+            threads: None,
+            gpu_mode: true,
+            require_gpu: false,
+        };
+
+        assert_eq!(resolve_play_dimensions(&command, 120, 40), (30, 10));
+        assert_eq!(resolve_play_dimensions(&command, 40, 12), (19, 5));
     }
 }

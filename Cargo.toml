@@ -2,6 +2,13 @@
 name = "labyrinthine"
 version = "0.1.0"
 edition = "2024"
+description = "Linux-first Rust terminal maze runner with Q-learning, auto-solving, and progressive levels"
+readme = "README.md"
+repository = "https://github.com/xeoxaz/Labyrinthine"
+homepage = "https://github.com/xeoxaz/Labyrinthine"
+license = "MIT"
+keywords = ["maze", "terminal", "tui", "q-learning", "game"]
+categories = ["games", "command-line-interface"]
 
 [dependencies]
 crossterm = "0.29"

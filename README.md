@@ -60,3 +60,20 @@ cargo run -- generate --width 25 --height 15 --seed 7
 
 - `--max-mode`: use near-full available CPU threads
 - `--threads N`: explicit thread cap
+
+## Arch / CachyOS packaging
+
+An Arch-style `labyrinthine-git` package scaffold is included in `packaging/arch/PKGBUILD`.
+
+```bash
+cd packaging/arch
+makepkg -si
+```
+
+Runtime notes:
+
+- Base runtime deps are `glibc` and `gcc-libs`
+- GPU probing is optional and uses external tools when present
+- Install `nvidia-utils` for `nvidia-smi`
+- Install `rocminfo` for ROCm probing
+- Install `vulkan-tools` for `vulkaninfo --summary`
