@@ -172,8 +172,9 @@ fn run_play(_command: &Command) -> Result<(), String> {
         last_simulation_tick = now;
         dirty |= update_view_cycle(&level_game, &mut view_cycle, &mut rng, now);
 
+        let max_simulation_steps = visible_simulation_step_limit(&level_game);
         let mut sim_steps = 0;
-        while accumulated >= SIMULATION_DT && sim_steps < MAX_SIMULATION_STEPS {
+        while accumulated >= SIMULATION_DT && sim_steps < max_simulation_steps {
             dirty |= advance_simulation(
                 &mut level_game,
                 &mut rng,
@@ -184,7 +185,7 @@ fn run_play(_command: &Command) -> Result<(), String> {
             sim_steps += 1;
         }
 
-        if sim_steps == MAX_SIMULATION_STEPS {
+        if sim_steps == max_simulation_steps {
             accumulated = Duration::ZERO;
         }
 
@@ -270,6 +271,18 @@ fn update_view_cycle(
 
 fn next_view_switch_delay(rng: &mut rand::rngs::StdRng) -> Duration {
     Duration::from_secs(rng.random_range(5..=10))
+}
+
+fn visible_simulation_step_limit(level_game: &LevelGame) -> usize {
+    if level_game.loading_level.is_none()
+        && level_game.reload_state.is_none()
+        && level_game.current_game.player.control_mode == ControlMode::MLAgent
+        && !level_game.current_game.player.won
+    {
+        1
+    } else {
+        MAX_SIMULATION_STEPS
+    }
 }
 
 fn run_boot_sequence<W: Write>(
@@ -816,5 +829,17 @@ mod cli_tests {
         assert!(advances_after_win(crossterm::event::KeyCode::Enter));
         assert!(advances_after_win(crossterm::event::KeyCode::Char(' ')));
         assert!(!advances_after_win(crossterm::event::KeyCode::Esc));
+    }
+
+    #[test]
+    fn visible_ml_simulation_is_capped_to_one_step() {
+        let mut level_game = LevelGame::new(123, 20, 12);
+        level_game.current_game.player.control_mode = ControlMode::MLAgent;
+        level_game.current_game.player.won = false;
+
+        assert_eq!(visible_simulation_step_limit(&level_game), 1);
+
+        level_game.current_game.player.control_mode = ControlMode::Manual;
+        assert_eq!(visible_simulation_step_limit(&level_game), MAX_SIMULATION_STEPS);
     }
 }

@@ -756,6 +756,14 @@ fn build_map(
         }
     }
 
+    if game.player.control_mode == ControlMode::MLAgent {
+        for point in &game.trail {
+            let x = point.0 * 2 + 1;
+            let y = point.1 * 2 + 1;
+            map[y][x] = tile('•', palette.accent);
+        }
+    }
+
     let start = (maze.start.0 * 2 + 1, maze.start.1 * 2 + 1);
     let exit = (maze.exit.0 * 2 + 1, maze.exit.1 * 2 + 1);
     map[start.1][start.0] = tile('S', Color::DarkGreen);
